@@ -34,7 +34,7 @@ import numpy as np
 
 from cerebral_cortex import CerebralCortex
 from basal_ganglia import BasalGanglia
-from cerebellum import ForwardModel, InverseModel
+from cerebellum import ForwardModel, InverseModel, CerebellarCorrector, HybridController
 
 
 # ======================================================================
@@ -388,7 +388,14 @@ def test(
     print("  TEST PHASE: Comparing Control Strategies")
     print("=" * 72)
 
-    results = {"bg": [], "inverse": [], "predictive": []}
+    # Build the hybrid controller (v2 features)
+    corrector = CerebellarCorrector(forward_model, correction_gain=0.5)
+    hybrid = HybridController(
+        forward_model, inverse_model, corrector,
+        surprise_threshold_factor=2.0,
+    )
+
+    results = {"bg": [], "inverse": [], "predictive": [], "hybrid": []}
 
     for trial in range(n_trials):
         np.random.seed(seed + trial)
@@ -481,6 +488,42 @@ def test(
         final_dist_pred = np.linalg.norm(env.pos - env.target)
         results["predictive"].append((total_r, env.step_count, final_dist_pred))
 
+        # --- Strategy 4: Hybrid controller (v2) ---
+        # Cerebellum with online correction + automatic BG fallback
+        # when forward model prediction error signals surprise.
+        np.random.seed(seed + trial)
+        env.reset()
+        env.pos = start_pos.copy()
+        env.vel = np.zeros(2)
+        env.target = target_pos.copy()
+        env.step_count = 0
+
+        hybrid.reset()
+        total_r = 0.0
+        done = False
+        raw_state = env._get_state()
+        target_raw = np.concatenate([target_pos, np.zeros(2), target_pos])
+        cortex_repr = cortex.encode(raw_state)
+        bg_state = _augment_state(raw_state, cortex_repr)
+        prev_raw = None
+
+        while not done:
+            action, source, pred_err = hybrid.select_action(
+                raw_state, bg_state, target_raw, basal_ganglia,
+                observed_state=raw_state,
+            )
+            # Record for next step's correction
+            corrector.begin_step(raw_state, action)
+
+            raw_state, r, done = env.step(action)
+            total_r += r
+            raw_state = env._get_state()
+            cortex_repr = cortex.encode(raw_state)
+            bg_state = _augment_state(raw_state, cortex_repr)
+
+        final_dist_hyb = np.linalg.norm(env.pos - env.target)
+        results["hybrid"].append((total_r, env.step_count, final_dist_hyb))
+
     # --- Print results ---
     print()
     print(f"  {'Strategy':<42s} | {'Reward':>12s} | {'Steps':>5s} | "
@@ -491,6 +534,7 @@ def test(
         ("bg", "Basal Ganglia (RL policy)"),
         ("inverse", "Cerebellum (inverse model)"),
         ("predictive", "Predictive (fwd model + BG value)"),
+        ("hybrid", "Hybrid (correction + auto-switch)"),
     ]:
         rewards = [r for r, _, _ in results[name]]
         steps = [s for _, s, _ in results[name]]
@@ -504,6 +548,11 @@ def test(
             f"{successes:3d}/{n_trials}"
         )
 
+    # Hybrid controller statistics
+    print()
+    print(f"  Hybrid controller: {hybrid.cerebellum_ratio*100:.1f}% cerebellar, "
+          f"{(1 - hybrid.cerebellum_ratio)*100:.1f}% BG fallback")
+    print(f"  Surprise threshold: {hybrid.surprise_threshold:.4f}")
     print()
     print("  Key observations (cf. Doya 1999, 2000):")
     print("  - The BG policy learns reward-based action selection via TD learning")
@@ -512,6 +561,11 @@ def test(
     print("  - The predictive strategy combines the cerebellar forward model")
     print("    with the BG value function (Fig. 7: 'action selection with a")
     print("    forward model')")
+    print("  - The hybrid controller uses the forward model as a surprise detector:")
+    print("    cerebellar control for familiar states, automatic BG fallback")
+    print("    when prediction error exceeds the adaptive threshold (v2)")
+    print("  - Online correction uses the forward model prediction error to")
+    print("    generate fine motor adjustments at each timestep (v2)")
     print()
 
 
