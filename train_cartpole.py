@@ -44,6 +44,10 @@ except ImportError:
     print("Error: gymnasium is required. Install with: pip install gymnasium")
     sys.exit(1)
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from cerebral_cortex import CerebralCortex
 from basal_ganglia import BasalGanglia
 from cerebellum import (
@@ -377,9 +381,17 @@ def train(
 
     env.close()
 
+    metrics = {
+        "rewards": episode_rewards,
+        "cortex_errors": cortex_errors,
+        "forward_errors": forward_errors,
+        "inverse_errors": inverse_errors,
+        "td_magnitudes": td_magnitudes,
+    }
+
     return (
         cortex, basal_ganglia, forward_model, inverse_model,
-        episode_rewards, episode_lengths,
+        episode_rewards, episode_lengths, metrics,
     )
 
 
@@ -480,7 +492,7 @@ def simulate(
 # Testing (non-visual, statistical)
 # ======================================================================
 
-def test(
+def run_test(
     cortex: CerebralCortex,
     basal_ganglia: BasalGanglia,
     forward_model: ForwardModel,
@@ -488,7 +500,7 @@ def test(
     n_trials: int = 50,
     seed: int = 999,
 ):
-    """Compare control strategies on CartPole (no rendering)."""
+    """Compare control strategies on CartPole (no rendering). Returns results dict."""
     np.random.seed(seed)
     env = gym.make("CartPole-v1")
 
@@ -616,6 +628,129 @@ def test(
           f"{(1 - hybrid.cerebellum_ratio)*100:.1f}% BG fallback")
     print()
 
+    return results
+
+
+# ======================================================================
+# Training report (PNG)
+# ======================================================================
+
+def _smooth(data, window=50):
+    """Simple moving average for plotting."""
+    if len(data) < window:
+        return np.array(data)
+    kernel = np.ones(window) / window
+    return np.convolve(data, kernel, mode="valid")
+
+
+def plot_training_report(
+    metrics: dict,
+    mode: str,
+    test_results: dict | None = None,
+    filename: str = "cartpole_training_report.png",
+):
+    """Generate a multi-panel PNG summarizing training and test results.
+
+    Panels:
+      1. Episode reward (steps survived) with smoothed curve
+      2. TD error magnitude (dopamine signal)
+      3. Cortex reconstruction error
+      4. Cerebellar forward & inverse model errors
+      5. Test comparison bar chart (if test_results provided)
+    """
+    mode_label = {
+        "reactive": "Section 4.1 — Reactive (Fig. 6)",
+        "predictive": "Section 4.2.1 — Discrete model-based (Fig. 7)",
+    }
+
+    has_test = test_results is not None and len(test_results) > 0
+    n_panels = 5 if has_test else 4
+
+    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 3.2 * n_panels))
+    fig.suptitle(
+        f"Doya (1999) — CartPole-v1 Training Report\n{mode_label.get(mode, mode)}",
+        fontsize=14, fontweight="bold", y=0.995,
+    )
+
+    episodes = np.arange(1, len(metrics["rewards"]) + 1)
+    window = 50
+    smooth_x = np.arange(window, len(metrics["rewards"]) + 1)
+
+    # --- Panel 1: Episode reward ---
+    ax = axes[0]
+    ax.plot(episodes, metrics["rewards"], alpha=0.25, color="C0", linewidth=0.5)
+    ax.plot(smooth_x, _smooth(metrics["rewards"], window), color="C0", linewidth=2,
+            label=f"Avg (window={window})")
+    ax.set_ylabel("Steps survived")
+    ax.set_title("Episode Reward")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    # --- Panel 2: TD magnitude (dopamine) ---
+    ax = axes[1]
+    ax.plot(episodes, metrics["td_magnitudes"], alpha=0.25, color="C1", linewidth=0.5)
+    ax.plot(smooth_x, _smooth(metrics["td_magnitudes"], window), color="C1", linewidth=2)
+    ax.set_ylabel("|δ| (DA signal)")
+    ax.set_title("TD Error Magnitude — Dopamine Signal (Eq. 10)")
+    ax.grid(True, alpha=0.3)
+
+    # --- Panel 3: Cortex reconstruction error ---
+    ax = axes[2]
+    ax.plot(episodes, metrics["cortex_errors"], alpha=0.25, color="C2", linewidth=0.5)
+    ax.plot(smooth_x, _smooth(metrics["cortex_errors"], window), color="C2", linewidth=2)
+    ax.set_ylabel("||x - W'y||²")
+    ax.set_title("Cortex Reconstruction Error — Unsupervised Learning (Eq. 17-18)")
+    ax.grid(True, alpha=0.3)
+
+    # --- Panel 4: Cerebellar errors ---
+    ax = axes[3]
+    ax.plot(episodes, metrics["forward_errors"], alpha=0.25, color="C3", linewidth=0.5)
+    fwd_smooth = _smooth(metrics["forward_errors"], window)
+    ax.plot(smooth_x, fwd_smooth, color="C3", linewidth=2, label="Forward model (Eq. 21)")
+    ax.plot(episodes, metrics["inverse_errors"], alpha=0.25, color="C4", linewidth=0.5)
+    inv_smooth = _smooth(metrics["inverse_errors"], window)
+    ax.plot(smooth_x, inv_smooth, color="C4", linewidth=2, label="Inverse model (Fig. 11)")
+    ax.set_ylabel("MSE")
+    ax.set_title("Cerebellar Model Errors — Supervised Learning (Eq. 5)")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("Episode")
+
+    # --- Panel 5: Test comparison (if available) ---
+    if has_test:
+        ax = axes[4]
+        names = list(test_results.keys())
+        means = [np.mean(v) for v in test_results.values()]
+        stds = [np.std(v) for v in test_results.values()]
+        colors = ["C0", "C3", "C4", "C5"][:len(names)]
+
+        labels = {
+            "bg": "BG\n(4.1)",
+            "predictive": "Predictive\n(4.2.1)",
+            "inverse": "Inverse\n(Fig. 11)",
+            "hybrid": "Hybrid\n(v2)",
+        }
+        x_labels = [labels.get(n, n) for n in names]
+
+        bars = ax.bar(x_labels, means, yerr=stds, color=colors, alpha=0.8,
+                      capsize=5, edgecolor="black", linewidth=0.5)
+        ax.set_ylabel("Steps survived")
+        ax.set_title("Test Phase — Strategy Comparison (50 trials)")
+        ax.grid(True, alpha=0.3, axis="y")
+        ax.axhline(y=500, color="gray", linestyle="--", alpha=0.5, label="Max (500)")
+        ax.legend(loc="upper left")
+
+        for bar, m in zip(bars, means):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 5,
+                    f"{m:.0f}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+        ax.set_xlabel("")
+
+    plt.tight_layout()
+    fig.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Training report saved: {filename}")
+
 
 # ======================================================================
 # Main — interactive architecture selection
@@ -678,7 +813,7 @@ def main():
 
     # Train
     results = train(mode=mode, n_episodes=args.episodes, print_every=100)
-    cortex, bg, fwd, inv, rewards, lengths = results
+    cortex, bg, fwd, inv, rewards, lengths, metrics = results
 
     # Learning curve summary
     print()
@@ -693,8 +828,11 @@ def main():
         print(f"    Episodes {s+1:4d}-{e:4d}: {avg_r:7.1f} steps")
     print("-" * 72)
 
-    # Statistical test
-    test(cortex, bg, fwd, inv)
+    # Statistical test (capture results for plot)
+    test_results = run_test(cortex, bg, fwd, inv)
+
+    # Generate training report PNG
+    plot_training_report(metrics, mode, test_results=test_results)
 
     # Visual simulation
     if not args.no_render:
