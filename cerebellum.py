@@ -216,6 +216,30 @@ class Cerebellum:
         squared_error = float(np.sum((target - prediction) ** 2))
         return prediction, squared_error
 
+    def save(self, path: str):
+        """Save cerebellar weights (granule + Purkinje + normalization stats)."""
+        np.savez(
+            path,
+            gc_weights=self.gc_weights,
+            gc_bias=self.gc_bias,
+            pc_weights=self.pc_weights,
+            pc_bias=self.pc_bias,
+            input_mean=self._input_mean,
+            input_var=self._input_var,
+            n_samples=np.array([self._n_samples]),
+        )
+
+    def load(self, path: str):
+        """Load cerebellar weights."""
+        data = np.load(path)
+        self.gc_weights = data["gc_weights"]
+        self.gc_bias = data["gc_bias"]
+        self.pc_weights = data["pc_weights"]
+        self.pc_bias = data["pc_bias"]
+        self._input_mean = data["input_mean"]
+        self._input_var = data["input_var"]
+        self._n_samples = int(data["n_samples"][0])
+
 
 class ForwardModel(Cerebellum):
     """Cerebellar forward model: predicts next state from state and action.

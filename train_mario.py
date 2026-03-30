@@ -19,12 +19,19 @@ Two architectures selectable at startup (Doya 1999 Section 4):
 
 Usage
 -----
-    python train_mario.py                  # interactive menu
-    python train_mario.py reactive         # Section 4.1 directly
-    python train_mario.py predictive       # Section 4.2.1 directly
-    python train_mario.py predictive -n 500 --no-render
+    # Training
+    python train_mario.py                           # interactive menu
+    python train_mario.py reactive                  # Section 4.1 directly
+    python train_mario.py predictive -n 500         # 500 episodes
+    python train_mario.py predictive --report       # generate PNG report
+
+    # Inference (load saved model)
+    python train_mario.py --load checkpoints/best   # run test phase
+    python train_mario.py --load checkpoints/best --render          # visual playback (all strategies)
+    python train_mario.py --load checkpoints/best --render --strategy bg  # specific strategy
 """
 
+import os
 import sys
 import argparse
 import numpy as np
@@ -42,6 +49,46 @@ from cerebellum_mario import (
     CerebellarCorrectorMario,
     HybridControllerMario,
 )
+
+
+# ======================================================================
+# Checkpoint save / load
+# ======================================================================
+
+def save_checkpoint(
+    path: str,
+    cortex: CerebralCortexMario,
+    basal_ganglia: BasalGangliaMario,
+    forward_model: ForwardModelMario,
+    inverse_model: InverseModelMario,
+):
+    """Save all four brain modules to a directory."""
+    os.makedirs(path, exist_ok=True)
+    cortex.save(os.path.join(path, "cortex.pt"))
+    basal_ganglia.save(os.path.join(path, "basal_ganglia.pt"))
+    forward_model.save(os.path.join(path, "forward_model.npz"))
+    inverse_model.save(os.path.join(path, "inverse_model.npz"))
+    print(f"  Checkpoint saved: {path}")
+
+
+def load_checkpoint(
+    path: str,
+    n_actions: int = 7,
+    feature_dim: int = 64,
+) -> tuple[CerebralCortexMario, BasalGangliaMario, ForwardModelMario, InverseModelMario]:
+    """Load all four brain modules from a checkpoint directory."""
+    cortex = CerebralCortexMario(in_channels=4, repr_dim=feature_dim)
+    basal_ganglia = BasalGangliaMario(state_dim=feature_dim, n_actions=n_actions)
+    forward_model = ForwardModelMario(feature_dim=feature_dim, n_actions=n_actions, n_granule=512)
+    inverse_model = InverseModelMario(feature_dim=feature_dim, n_actions=n_actions, n_granule=512)
+
+    cortex.load(os.path.join(path, "cortex.pt"))
+    basal_ganglia.load(os.path.join(path, "basal_ganglia.pt"))
+    forward_model.load(os.path.join(path, "forward_model.npz"))
+    inverse_model.load(os.path.join(path, "inverse_model.npz"))
+
+    print(f"  Checkpoint loaded: {path}")
+    return cortex, basal_ganglia, forward_model, inverse_model
 
 
 # ======================================================================
@@ -117,6 +164,7 @@ def train(
     print_every: int = 50,
     seed: int = 42,
     warmup_frames: int = 5000,
+    checkpoint_dir: str = "checkpoints",
 ):
     """Train the integrated model on Mario Bros / Atari.
 
@@ -124,6 +172,8 @@ def train(
     ----------
     mode : str
         "reactive" (Section 4.1) or "predictive" (Section 4.2.1).
+    checkpoint_dir : str
+        Directory for auto-saving best model.
     """
     np.random.seed(seed)
 
@@ -177,6 +227,7 @@ def train(
     print(f"  Cerebellum:    forward ({feature_dim}+{n_actions}D -> {feature_dim}D)")
     print(f"                 inverse ({feature_dim}*2D -> {n_actions}D)")
     print(f"  Training:      {n_episodes} episodes")
+    print(f"  Auto-save:     {checkpoint_dir}/best")
     print("=" * 72)
     print()
 
@@ -193,6 +244,8 @@ def train(
 
     initial_temp = 2.0
     final_temp = 0.1
+    best_reward = -float("inf")
+    best_path = os.path.join(checkpoint_dir, "best")
 
     for episode in range(1, n_episodes + 1):
         obs, info = env.reset()
@@ -260,6 +313,14 @@ def train(
         inverse_errors.append(np.mean(ep_inv) if ep_inv else 0)
         td_magnitudes.append(np.mean(ep_td) if ep_td else 0)
 
+        # --- Auto-save best model ---
+        # Use rolling average over last 10 episodes to reduce noise
+        window = min(10, len(episode_rewards))
+        avg_recent = np.mean(episode_rewards[-window:])
+        if episode >= 10 and avg_recent > best_reward:
+            best_reward = avg_recent
+            save_checkpoint(best_path, cortex, basal_ganglia, forward_model, inverse_model)
+
         if episode % print_every == 0 or episode == 1:
             w = min(print_every, episode)
             avg_r = np.mean(episode_rewards[-w:])
@@ -268,6 +329,7 @@ def train(
             avg_fwd = np.mean(forward_errors[-w:])
             avg_inv = np.mean(inverse_errors[-w:])
             avg_td = np.mean(td_magnitudes[-w:])
+            best_mark = " *" if avg_recent >= best_reward else ""
             print(
                 f"Ep {episode:4d} | "
                 f"R {avg_r:7.1f} | "
@@ -275,10 +337,14 @@ def train(
                 f"DA {avg_td:.3f} | "
                 f"Cx {avg_cx:.4f} | "
                 f"Fwd {avg_fwd:.4f} | "
-                f"Inv {avg_inv:.4f}"
+                f"Inv {avg_inv:.4f}{best_mark}"
             )
 
     env.close()
+
+    # Save final model
+    final_path = os.path.join(checkpoint_dir, "final")
+    save_checkpoint(final_path, cortex, basal_ganglia, forward_model, inverse_model)
 
     metrics = {
         "rewards": episode_rewards,
@@ -471,6 +537,10 @@ def simulate(
                 corrector.begin_step(features, action)
 
             obs, r, done, truncated, _ = env.step(action)
+            try:
+                env.render()
+            except Exception:
+                pass
             total_r += r
             features = cortex.encode(obs)
 
@@ -602,12 +672,56 @@ def main():
     )
     parser.add_argument(
         "mode", nargs="?", choices=["reactive", "predictive"], default=None,
+        help="Training architecture: reactive (4.1) or predictive (4.2.1)",
     )
-    parser.add_argument("--episodes", "-n", type=int, default=2000)
-    parser.add_argument("--warmup", type=int, default=5000)
-    parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--episodes", "-n", type=int, default=2000,
+                        help="Number of training episodes")
+    parser.add_argument("--warmup", type=int, default=5000,
+                        help="Number of random frames for cortex warmup")
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
+                        help="Directory for saving model checkpoints")
+
+    # Inference / playback
+    parser.add_argument("--load", type=str, default=None, metavar="PATH",
+                        help="Load a saved checkpoint (skip training)")
+    parser.add_argument("--render", action="store_true",
+                        help="Visual playback of model on the game")
+    parser.add_argument("--strategy", type=str, default=None,
+                        choices=["bg", "predictive", "inverse", "hybrid"],
+                        help="Strategy for --render (default: all)")
+
+    # Report
+    parser.add_argument("--report", action="store_true",
+                        help="Generate PNG training report")
+    parser.add_argument("--no-render", action="store_true",
+                        help="Skip visual simulation after training")
+
     args = parser.parse_args()
 
+    # === Inference mode: load checkpoint ===
+    if args.load is not None:
+        # Detect n_actions from environment
+        env, n_actions, env_name = make_mario_env()
+        env.close()
+
+        cortex, bg, fwd, inv = load_checkpoint(args.load, n_actions=n_actions)
+
+        if args.render:
+            # Visual playback
+            strategies = [args.strategy] if args.strategy else ["bg", "predictive", "inverse", "hybrid"]
+            for strat in strategies:
+                try:
+                    simulate(cortex, bg, fwd, inv, strategy=strat, n_episodes=3)
+                except KeyboardInterrupt:
+                    print("\n  Skipped.")
+                    break
+        else:
+            # Run test phase
+            run_test(cortex, bg, fwd, inv)
+
+        return 0
+
+    # === Training mode ===
     if args.mode is None:
         print()
         print("=" * 56)
@@ -635,9 +749,10 @@ def main():
         mode=mode,
         n_episodes=args.episodes,
         warmup_frames=args.warmup,
+        checkpoint_dir=args.checkpoint_dir,
     )
 
-    # Learning curve
+    # Learning curve summary
     print()
     print("-" * 72)
     print("  Learning curve summary:")
@@ -653,10 +768,11 @@ def main():
     # Test
     test_results = run_test(cortex, bg, fwd, inv)
 
-    # Report
-    plot_training_report(metrics, mode, test_results=test_results)
+    # Report (optional, with --report flag)
+    if args.report:
+        plot_training_report(metrics, mode, test_results=test_results)
 
-    # Visual simulation
+    # Visual simulation (unless --no-render)
     if not args.no_render:
         print("  Visual simulation — press Ctrl+C to skip")
         for strat in ["bg", "predictive", "inverse", "hybrid"]:

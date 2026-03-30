@@ -24,6 +24,7 @@ The TD learning rules (Eq. 10-14) are preserved exactly:
     where (u - ū) in continuous case becomes ∇log π in discrete case
 """
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -237,3 +238,19 @@ class BasalGangliaMario:
         self._prev_value = None
         self._prev_action = None
         self._prev_log_prob = None
+
+    def save(self, path: str):
+        """Save actor and critic weights."""
+        torch.save({
+            "critic": self.critic.state_dict(),
+            "actor": self.actor.state_dict(),
+            "state_dim": self.state_dim,
+            "n_actions": self.n_actions,
+            "gamma": self.gamma,
+        }, path)
+
+    def load(self, path: str):
+        """Load actor and critic weights."""
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.critic.load_state_dict(ckpt["critic"])
+        self.actor.load_state_dict(ckpt["actor"])

@@ -32,6 +32,7 @@ into cortical weights. This is biologically correct — dopamine modulates
 corticostriatal synapses (in the BG), not intracortical synapses.
 """
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -269,3 +270,18 @@ class CerebralCortexMario:
                 print(f"      Epoch {epoch+1:3d}: loss = {avg:.4f}")
 
         return losses[-1] if losses else 0.0
+
+    def save(self, path: str):
+        """Save encoder and decoder weights."""
+        torch.save({
+            "encoder": self.encoder.state_dict(),
+            "decoder": self.decoder.state_dict(),
+            "repr_dim": self.repr_dim,
+            "sparsity_lambda": self.sparsity_lambda,
+        }, path)
+
+    def load(self, path: str):
+        """Load encoder and decoder weights."""
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.encoder.load_state_dict(ckpt["encoder"])
+        self.decoder.load_state_dict(ckpt["decoder"])

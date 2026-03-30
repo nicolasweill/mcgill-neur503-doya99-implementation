@@ -1,0 +1,47 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from train import train
+
+def main():
+    print("Entraînement du modèle pour récupérer les données...")
+    # On entraîne le modèle et on récupère les données
+    results = train(n_episodes=1000, print_every=200)
+    env, cortex, bg, fwd, inv, rewards, lengths, successes = results
+
+    # Création de la figure avec 3 sous-graphiques
+    fig, axs = plt.subplots(3, 1, figsize=(10, 12))
+    
+    # Fonction de lissage (moyenne mobile) pour rendre les graphiques plus lisibles
+    def smooth(y, window=50):
+        box = np.ones(window)/window
+        return np.convolve(y, box, mode='same')
+        
+    # Graphique 1 : Récompenses
+    axs[0].plot(rewards, alpha=0.3, color='blue')
+    axs[0].plot(smooth(rewards), color='blue', linewidth=2)
+    axs[0].set_title('Récompenses par épisode (TD Learning)')
+    axs[0].set_ylabel('Récompense')
+    axs[0].grid(True, alpha=0.3)
+    
+    # Graphique 2 : Étapes (Longueur de l'épisode)
+    axs[1].plot(lengths, alpha=0.3, color='orange')
+    axs[1].plot(smooth(lengths), color='orange', linewidth=2)
+    axs[1].set_title("Durée des épisodes (Optimisation de l'effort)")
+    axs[1].set_ylabel('Nombre d\'étapes')
+    axs[1].grid(True, alpha=0.3)
+    
+    # Graphique 3 : Taux de réussite
+    axs[2].plot(successes, alpha=0.3, color='green')
+    axs[2].plot(smooth(successes), color='green', linewidth=2)
+    axs[2].set_title('Taux de réussite (Atteinte de la cible)')
+    axs[2].set_ylabel('Succès (1=Oui, 0=Non)')
+    axs[2].set_xlabel('Épisode')
+    axs[2].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('learning_curves.png', dpi=300)
+    print("\nGraphique sauvegardé avec succès sous le nom 'learning_curves.png' !")
+    plt.show()
+
+if __name__ == "__main__":
+    main()

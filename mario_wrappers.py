@@ -37,6 +37,44 @@ except ImportError:
 import cv2
 
 
+class _OldGymToGymnasium(gym.Env):
+    """Thin adapter: wraps an old gym.Env into a gymnasium.Env.
+
+    Needed because nes_py / JoypadSpace still uses the legacy gym API
+    while our preprocessing wrappers expect gymnasium.
+    """
+
+    def __init__(self, env, render_mode=None):
+        self._env = env
+        self.observation_space = env.observation_space
+        self.action_space = env.action_space
+        self.metadata = getattr(env, "metadata", {})
+        self.render_mode = render_mode
+        # Propagate render_mode to the EnvCompatibility wrapper (apply_api_compatibility)
+        if render_mode is not None and hasattr(env, "unwrapped"):
+            env.unwrapped.render_mode = render_mode
+
+    def reset(self, **kwargs):
+        result = self._env.reset()
+        if isinstance(result, tuple):
+            return result
+        return result, {}
+
+    def step(self, action):
+        result = self._env.step(action)
+        if len(result) == 4:
+            obs, reward, done, info = result
+            return obs, float(reward), bool(done), False, info
+        obs, reward, terminated, truncated, info = result
+        return obs, float(reward), bool(terminated), bool(truncated), info
+
+    def render(self):
+        return self._env.render()
+
+    def close(self):
+        return self._env.close()
+
+
 class SkipFrame(gym.Wrapper):
     """Repeat the chosen action for `skip` frames, accumulate reward.
 
@@ -158,12 +196,9 @@ def make_mario_env(render_mode=None):
         from nes_py.wrappers import JoypadSpace
         from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
-        env = gym_super_mario_bros.make(
-            'SuperMarioBros-v0',
-            apply_api_compatibility=True,
-            render_mode=render_mode,
-        )
+        env = gym_super_mario_bros.make('SuperMarioBros-v0', apply_api_compatibility=True)
         env = JoypadSpace(env, SIMPLE_MOVEMENT)
+        env = _OldGymToGymnasium(env, render_mode=render_mode)
         n_actions = len(SIMPLE_MOVEMENT)  # 7
         env_name = "SuperMarioBros-v0"
     except (ImportError, Exception):
