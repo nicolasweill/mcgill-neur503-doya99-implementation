@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Model checkpoints / large artifacts
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+*.zip
+
+# Logs / tensorboard
+runs/
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
